@@ -96,8 +96,10 @@ export function decide(
   c: Config,
   context: Context,
   hidden?: { media?: ReadonlyMap<string, Media>; extras?: readonly Extra[] },
-  /** Estimated tokens right after this conversation's previous pruning, if any. */
+  /** Tokens right after this conversation's previous pruning, if any. */
   previous?: number,
+  /** Who asked: only lopper's own request must leave room under its threshold. */
+  trigger: string = 'plugin',
 ): Verdict {
   const { threshold, target } = limits(c, context.window);
   const options: Options = {
@@ -131,7 +133,8 @@ export function decide(
   if (freed < Math.max(15_000, before * 0.15)) {
     return { kind: 'summary', refusal: { why: 'little', freed: Math.max(0, freed) }, before, after };
   }
-  if (after > threshold * 0.75) {
+  // At Claude Code's own limit, or on /compact, any real saving beats a summary.
+  if (trigger === 'plugin' && after > threshold * 0.75) {
     return { kind: 'summary', refusal: { why: 'still-big', after, threshold }, before, after };
   }
   return { kind: 'pruned', result, before, after, pass };
@@ -166,12 +169,12 @@ const TEXT = {
         s.trimmed > 0 ? `${s.trimmed} results trimmed` : '',
         s.superseded > 0 ? `${s.superseded} superseded` : '',
         s.inputsTrimmed > 0 ? `${s.inputsTrimmed} inputs trimmed` : '',
-        s.mediaRemoved > 0 ? `${s.mediaRemoved} images removed` : '',
+        s.mediaRemoved > 0 ? `${s.mediaRemoved} images/documents removed` : '',
       ].filter(Boolean);
       const percent = Math.round((1 - v.after / v.before) * 100);
       return `${k(v.before)} → ~${k(v.after)} tokens (−${percent}%) in ${s.ms} ms${
         v.pass === 2 ? ', tight pass' : ''
-      }; ${parts.join(', ') || 'thinking and images dropped'}; every word kept`;
+      }; ${parts.join(', ') || 'past thinking dropped'}; every word kept`;
     },
     toast: (v: Extract<Verdict, { kind: 'pruned' }>) =>
       `${k(v.before)} → ~${k(v.after)} tokens in ${v.result.stats.ms} ms · every word kept`,
@@ -181,7 +184,7 @@ const TEXT = {
     totals: (n: number, pruned: number) =>
       `${n === 1 ? 'Last compaction' : `Last ${n} compactions`}: ${pruned} pruned, ${n - pruned} left to the built-in summary.`,
     rowPruned: (e: Entry) =>
-      `${k(e.before)} → ~${k(e.after ?? 0)}: ${e.trimmed ?? 0} trimmed, ${e.superseded ?? 0} superseded, ${e.media ?? 0} images, ${e.ms ?? 0} ms`,
+      `${k(e.before)} → ~${k(e.after ?? 0)}: ${e.trimmed ?? 0} trimmed, ${e.superseded ?? 0} superseded, ${e.media ?? 0} images/documents, ${e.ms ?? 0} ms`,
     rowSummary: (e: Entry) => `built-in summary: ${e.reason ?? ''}`,
     rowSkipped: (e: Entry) => `skipped: ${e.reason ?? ''}`,
   },
@@ -209,12 +212,12 @@ const TEXT = {
         s.trimmed > 0 ? `${s.trimmed} risultati accorciati` : '',
         s.superseded > 0 ? `${s.superseded} superati` : '',
         s.inputsTrimmed > 0 ? `${s.inputsTrimmed} input accorciati` : '',
-        s.mediaRemoved > 0 ? `${s.mediaRemoved} immagini tolte` : '',
+        s.mediaRemoved > 0 ? `${s.mediaRemoved} immagini/documenti tolti` : '',
       ].filter(Boolean);
       const percent = Math.round((1 - v.after / v.before) * 100);
       return `${k(v.before)} → ~${k(v.after)} token (−${percent}%) in ${s.ms} ms${
         v.pass === 2 ? ', taglio stretto' : ''
-      }; ${parts.join(', ') || 'tolti pensiero e immagini'}; testo intatto`;
+      }; ${parts.join(', ') || 'tolto il pensiero passato'}; testo intatto`;
     },
     toast: (v: Extract<Verdict, { kind: 'pruned' }>) =>
       `${k(v.before)} → ~${k(v.after)} token in ${v.result.stats.ms} ms · testo intatto`,
@@ -224,7 +227,7 @@ const TEXT = {
     totals: (n: number, pruned: number) =>
       `${n === 1 ? 'Ultima compattazione' : `Ultime ${n} compattazioni`}: ${pruned} potate, ${n - pruned} passate al riassunto normale.`,
     rowPruned: (e: Entry) =>
-      `${k(e.before)} → ~${k(e.after ?? 0)}: ${e.trimmed ?? 0} accorciati, ${e.superseded ?? 0} superati, ${e.media ?? 0} immagini, ${e.ms ?? 0} ms`,
+      `${k(e.before)} → ~${k(e.after ?? 0)}: ${e.trimmed ?? 0} accorciati, ${e.superseded ?? 0} superati, ${e.media ?? 0} immagini/documenti, ${e.ms ?? 0} ms`,
     rowSummary: (e: Entry) => `riassunto normale: ${e.reason ?? ''}`,
     rowSkipped: (e: Entry) => `rimandata: ${e.reason ?? ''}`,
   },
@@ -342,6 +345,8 @@ export const register: Register = (on, options) => {
   const lastAfter = new Map<string, number>();
   /** Per session: no automatic compaction until the context reaches this size again. */
   const deferredUntil = new Map<string, number>();
+  /** Conversations whose `lastAfter` is still the estimate, waiting for a real reading. */
+  const settling = new Set<string>();
   let asking = false;
 
   on('session.start', async ($, e, next) => {
@@ -365,9 +370,11 @@ export const register: Register = (on, options) => {
     try {
       const id = await $.session.id();
       for (const key of [...lastAfter.keys()]) if (key.startsWith(`${id}:`)) lastAfter.delete(key);
+      for (const key of [...settling]) if (key.startsWith(`${id}:`)) settling.delete(key);
       deferredUntil.delete(id);
     } catch {
       lastAfter.clear();
+      settling.clear();
       deferredUntil.clear();
     }
     return next(e);
@@ -377,14 +384,27 @@ export const register: Register = (on, options) => {
     // A precompute prepares a summary ahead of time; pruning takes milliseconds
     // and is done on the spot, so there is nothing to precompute.
     if (e.trigger === 'precompute') return { skip: 'lopper: nothing to precompute' };
+    let session = '';
+    let key = '';
+    try {
+      session = await $.session.id();
+      key = `${session}:${e.agentId ?? ''}`;
+    } catch {
+      // Without an id the state below is simply not kept for this compaction.
+    }
+    /** After a summary the conversation is small again: nothing from before still holds. */
+    const forget = () => {
+      lastAfter.delete(key);
+      settling.delete(key);
+      deferredUntil.delete(session);
+    };
     const handOver = (why: string) => {
+      forget();
       $.ui.log(t.summary(why));
       return next(e);
     };
     if (e.instructions && e.instructions.trim().length > 0) return handOver(t.instructions);
     try {
-      const session = await $.session.id();
-      const key = `${session}:${e.agentId ?? ''}`;
       const main = e.agentId === undefined;
       const usage = await $.session.usage(main ? { breakdown: 'summary' } : undefined);
       const context: Context = main
@@ -403,10 +423,9 @@ export const register: Register = (on, options) => {
       } catch {
         hidden = undefined;
       }
-      const verdict = decide(e.messages, c, context, hidden, lastAfter.get(key));
+      const verdict = decide(e.messages, c, context, hidden, lastAfter.get(key), e.trigger);
       const at = await now($);
       if (verdict.kind === 'summary') {
-        lastAfter.delete(key);
         const why = t.refusal(verdict.refusal);
         // We asked for this compaction ourselves: better to wait than to summarize early.
         if (e.trigger === 'plugin') {
@@ -420,6 +439,8 @@ export const register: Register = (on, options) => {
         return handOver(why);
       }
       lastAfter.set(key, verdict.after);
+      // The estimate errs high: the first turn after this replaces it with the real size.
+      if (main) settling.add(key);
       deferredUntil.delete(session);
       await record($, entry(main ? e.trigger : `${e.trigger}, subagent`, verdict, at, c));
       $.ui.log(t.pruned(verdict));
@@ -430,19 +451,31 @@ export const register: Register = (on, options) => {
         tokensAfter: verdict.after,
       };
     } catch (error) {
-      return handOver(t.error(error instanceof Error ? error.message : String(error)));
+      const why = t.error(error instanceof Error ? error.message : String(error));
+      // Our own request: an error must not turn into the early summary we avoid on purpose.
+      if (e.trigger === 'plugin') {
+        $.ui.log(t.skipped(why));
+        return { skip: `lopper: ${why}` };
+      }
+      return handOver(why);
     }
   });
 
   on('turn.complete', async ($, e, next) => {
     const result = await next(e);
-    if (e.agentId !== undefined || !c.auto || asking || e.reason !== 'answer') return result;
+    if (e.agentId !== undefined || asking) return result;
     asking = true;
     try {
       const { context } = await $.session.usage();
-      const { threshold } = limits(c, context.window);
       const tokens = context.tokens ?? 0;
       const session = await $.session.id();
+      const key = `${session}:`;
+      if (settling.has(key) && tokens > 0) {
+        lastAfter.set(key, tokens);
+        settling.delete(key);
+      }
+      if (!c.auto || e.reason !== 'answer') return result;
+      const { threshold } = limits(c, context.window);
       if (tokens < threshold || tokens < (deferredUntil.get(session) ?? 0)) return result;
       // The turn is closed here (next has returned), so the engine takes the request.
       await $.session.compact();

@@ -155,7 +155,12 @@ export function estimateTokens(chars: number): number {
   return Math.ceil(chars / CHARS_PER_TOKEN);
 }
 
-const NOTE = '[lopper:';
+/**
+ * Every note starts with this. The word joiner (U+2060) after the colon is
+ * invisible and never typed by hand, so a note quoted in a file or a page read
+ * later (lopper's own README has one) is never mistaken for one of lopper's own.
+ */
+const NOTE = '[lopper:\u2060';
 
 function safeJson(value: unknown): string {
   try {
@@ -248,7 +253,7 @@ export function salvage(removed: string, limit = 400): string {
 }
 
 const CUT_NOTE =
-  /\[lopper: (\d+) chars of this result removed here to save context, not an error(?:; they included: ([^\n]*?))?\. Run the tool again if you need them\]\n?/;
+  /\[lopper:\u2060 (\d+) chars of this result removed here to save context, not an error(?:; they included: ([^\n]*?))?\. Run the tool again if you need them\]\n?/;
 
 /**
  * Head + note + tail. Short text, or a cut that would not save anything, stays as
@@ -314,6 +319,8 @@ function sortedJson(value: unknown): string {
  * later identical call.
  */
 const REPEATABLE = new Set(['Read', 'Grep', 'Glob', 'LS', 'WebFetch', 'WebSearch', 'NotebookRead']);
+/** These search the working directory unless given a `path`, and a `cd` in Bash moves it. */
+const NEEDS_PATH = new Set(['Grep', 'Glob', 'LS']);
 
 /** A result that points back to an earlier read instead of carrying the file. */
 function isStub(text: string): boolean {
@@ -340,7 +347,8 @@ function keysOf(use: ToolUse, result: ToolResult): Keys {
   const reads: string[] = [];
   const produces: string[] = [];
   const substantive = !result.isError && !isStub(result.text) && !isPartial(result.text);
-  if (REPEATABLE.has(use.tool)) {
+  const anchored = !NEEDS_PATH.has(use.tool) || (typeof use.input['path'] === 'string' && use.input['path'].startsWith('/'));
+  if (REPEATABLE.has(use.tool) && anchored) {
     const same = `same:${use.tool}:${sortedJson(use.input)}`;
     reads.push(same);
     if (substantive) produces.push(same);
@@ -379,7 +387,7 @@ function limitsFor(zone: Zone, tool: string, error: boolean, o: Options): Cut | 
   return limits;
 }
 
-const FIELD_NOTE = /…\[lopper: (\d+) chars of this field removed to save context\]$/;
+const FIELD_NOTE = /…\[lopper:\u2060 (\d+) chars of this field removed to save context\]$/;
 
 /** Shortens the long strings of an input; returns the same object when there is nothing to do. */
 function trimInput(value: unknown, max: number, depth = 0): { value: unknown; changed: boolean } {
@@ -488,9 +496,11 @@ function joinText(a: string, b: string): string {
  */
 export function regroup(rows: readonly Message[]): Message[] {
   const out: Message[] = [];
-  /** Calls of the last assistant message still waiting for their results. */
+  /** The assistant message being built: one API response. */
+  let current: Message | undefined;
+  /** Its calls still waiting for their results. */
   const waiting = new Set<string>();
-  /** The message collecting those results. */
+  /** The message collecting those results, right after `current`. */
   let results: Message | undefined;
   /** User text that arrived between calls and their results: it goes after them. */
   let held: Message[] = [];
@@ -501,17 +511,22 @@ export function regroup(rows: readonly Message[]): Message[] {
 
   for (const row of rows) {
     if (row.role === 'assistant') {
-      if (waiting.size === 0) release();
-      const last = out[out.length - 1];
-      if (last && last.role === 'assistant' && held.length === 0) {
-        last.text = joinText(last.text, row.text);
-        last.toolUses = [...last.toolUses, ...row.toolUses];
+      // Parallel calls can have a result recorded before the response lists its
+      // last call (`A[a] A[b] U[rb] A[c] U[ra] U[rc]`): still the same response.
+      const sameResponse =
+        current !== undefined &&
+        held.length === 0 &&
+        (waiting.size > 0 || out[out.length - 1] === current);
+      if (sameResponse && current) {
+        current.text = joinText(current.text, row.text);
+        current.toolUses = [...current.toolUses, ...row.toolUses];
       } else {
-        // A new turn: whatever was left waiting will not be answered here.
+        // A new response: calls left waiting will not be answered after this.
         waiting.clear();
         results = undefined;
         release();
-        out.push({ role: 'assistant', text: row.text, toolUses: [...row.toolUses] });
+        current = { role: 'assistant', text: row.text, toolUses: [...row.toolUses] };
+        out.push(current);
       }
       for (const use of row.toolUses) waiting.add(use.tool_use_id);
       continue;
@@ -533,6 +548,7 @@ export function regroup(rows: readonly Message[]): Message[] {
       }
       if (waiting.size === 0) {
         results = undefined;
+        current = undefined;
         release();
       }
       continue;
@@ -541,6 +557,7 @@ export function regroup(rows: readonly Message[]): Message[] {
       held.push({ ...row, toolUses: [...row.toolUses] });
       continue;
     }
+    current = undefined;
     out.push({ ...row, toolUses: [...row.toolUses] });
   }
   release();
@@ -573,14 +590,22 @@ export function prune(messages: readonly Message[], options: Partial<Options> = 
   };
 
   const calls = collectCalls(messages);
-  // Results that came in after the model last spoke have not been read yet: they
-  // are the working set of the turn in progress, and cutting them would leave the
-  // model reporting on output it never saw.
-  let lastAssistant = -1;
-  messages.forEach((m, i) => {
-    if (m.role === 'assistant') lastAssistant = i;
+  // Results the model has not read yet: those of the last response's calls, and
+  // anything after it. They are the working set of the turn in progress, and
+  // cutting them would leave the model reporting on output it never saw.
+  const unreadIds = new Set<string>();
+  const shape = regroup(messages);
+  let lastResponse = -1;
+  shape.forEach((m, i) => {
+    if (m.role === 'assistant') lastResponse = i;
   });
-  const unread = (c: Call): boolean => c.resultRow > lastAssistant;
+  if (lastResponse >= 0) {
+    for (const use of shape[lastResponse]!.toolUses) unreadIds.add(use.tool_use_id);
+    for (const m of shape.slice(lastResponse + 1)) for (const r of m.toolResults ?? []) unreadIds.add(r.tool_use_id);
+  } else {
+    for (const m of shape) for (const r of m.toolResults ?? []) unreadIds.add(r.tool_use_id);
+  }
+  const unread = (c: Call): boolean => c.result !== undefined && unreadIds.has(c.tool_use_id);
 
   // Superseded: walk from the newest call, remembering what was produced later.
   const supersededBy = new Map<string, string>();

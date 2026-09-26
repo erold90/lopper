@@ -2,11 +2,20 @@
   "name": "lopper",
   "version": "0.1.0",
   "description": "Compaction that prunes instead of summarizing: old tool output is trimmed, every word you and Claude wrote stays verbatim. Local, instant, no network.",
-  "author": { "name": "Daniele Lo Re", "url": "https://github.com/erold90" },
+  "author": {
+    "name": "Daniele Lo Re",
+    "url": "https://github.com/erold90"
+  },
   "homepage": "https://github.com/erold90/lopper",
   "repository": "https://github.com/erold90/lopper",
   "license": "MIT",
-  "keywords": ["compaction", "context", "tokens", "prune", "function-hooks"],
+  "keywords": [
+    "compaction",
+    "context",
+    "tokens",
+    "prune",
+    "function-hooks"
+  ],
   "userConfig": {
     "threshold": {
       "type": "number",
@@ -36,7 +45,11 @@
       "type": "string",
       "title": "Language of lopper's messages",
       "description": "en or it. Notes written for the model are always in English.",
-      "default": "en"
+      "default": "en",
+      "options": [
+        "en",
+        "it"
+      ]
     }
   }
 }

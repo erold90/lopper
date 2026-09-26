@@ -9,7 +9,7 @@ Old tool output gets trimmed. Every word you and Claude wrote stays exactly as i
 ![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-d97757)
 ![local only](https://img.shields.io/badge/network-none-3ddc97)
 ![compaction under 0.1 s](https://img.shields.io/badge/compaction-%3C0.1%20s-4ea1ff)
-![tests](https://img.shields.io/badge/tests-45%20passing-3ddc97)
+![tests](https://img.shields.io/badge/tests-51%20passing-3ddc97)
 ![license: MIT](https://img.shields.io/badge/license-MIT-8fa3b8)
 
 <img src="media/hero.gif" width="720" alt="/compact with lopper on a 281k-token session, then Claude quotes the exact error from early in the session">
@@ -41,7 +41,7 @@ At every compaction (`/compact`, Claude Code's auto-compaction, or its own trigg
 
 | Where the call sits | What happens to its result |
 |---|---|
-| Last ~40k tokens | Kept whole (unless it's over 60k characters) |
+| Last ~40k tokens | Kept whole, unless over 60k characters (20k tokens and 20k characters in the tight pass) |
 | The ~120k tokens before that | Light trim: first 2,500 + last 800 characters |
 | Older | Trimmed: first 900 + last 300 characters (errors keep twice the head) |
 | Made obsolete by a later call | Replaced by a one-line note: the same file read again in full, the file rewritten, or the same read-only call repeated |
@@ -52,8 +52,8 @@ It also:
 - **Drops images and past thinking** (they can't be rebuilt), leaving a note like *"removed an image from this result; read /path again if you need to see it"*.
 - **Salvages error lines, paths and URLs from whatever it cuts** into the note, so Claude knows they were there.
 - **Puts back the context the transcript doesn't show**: a skill's instructions, a file attached with `@`, a note where an image was pasted.
-- **Leaves alone whatever the model hasn't read yet.** Results that came in after Claude last spoke are its working set, so they stay whole.
-- **Keeps every call paired with its result**, parallel calls included, so nothing comes back as "tool result missing".
+- **Doesn't trim what the model hasn't read yet.** The results of its latest response are its working set, so they stay whole; only one over 60k characters gets capped.
+- **Keeps every call paired with its result**, parallel calls included, so nothing comes back as "tool result missing". Checked on 10,616 calls from 81 real sessions.
 
 If the first pass doesn't reach the target it runs a tighter one. If pruning can't free enough, it hands over to the built-in summary. It does the same when you pass instructions to the summarizer: `/compact focus on the API` gets you a summary.
 
@@ -65,9 +65,9 @@ Every cut leaves a `[lopper: …]` note, for example:
 
 ## What it never does
 
-- **It never changes a word you or Claude wrote**, and never reorders anything.
+- **It never changes a word you or Claude wrote.** The order stays too. The only moves are the ones the API needs: a response's text and calls go in one message, their results in the next.
 - **It never removes a tool call.** Every call stays, with at least a note. Plugins that drop whole calls leave the assistant's narration without the evidence. In one reported case the model then wrote nine "work done" reports for work that never happened ([fast-jev-compaction#65](https://github.com/tamaratran/fast-jev-compaction/issues/65)).
-- **It never talks to the network.** No API key, no telemetry, no model. It's about 1,200 lines of deterministic TypeScript running inside Claude Code.
+- **It never talks to the network.** No API key, no telemetry, no model. It's about 1,400 lines of deterministic TypeScript running inside Claude Code.
 
 ## Compared
 
@@ -124,7 +124,7 @@ Change them from `/config` or under `pluginConfigs` in settings.json.
 |---|---|---|
 | `threshold` | 300000 | Past this many tokens, lopper prunes at the end of a turn (capped at 60% of the model's window) |
 | `target` | 150000 | Where pruning aims to land; above it, a tighter pass runs (capped at 60% of the threshold) |
-| `recentTokens` | 40000 | The newest tokens, where results are never trimmed |
+| `recentTokens` | 40000 | The newest tokens, where results are kept whole (halved in the tight pass) |
 | `auto` | true | Off: lopper only acts on `/compact` and at Claude Code's own limit |
 | `language` | en | `en` or `it`, for lopper's own messages. Notes written for the model are always English |
 
@@ -143,7 +143,7 @@ Optional: to have long single turns (agents working for hours on one prompt) pru
 plugin/src/prune.ts    pure, deterministic core: zones, cuts, superseded calls, notes
 plugin/src/hidden.ts   lines the API view up with the transcript rows to find skills, @ files, pasted media
 plugin/hooks/lopper.ts the Claude Code side: session.compact, turn.complete, /lopper
-tests/                 45 tests (vitest)
+tests/                 51 tests (vitest)
 scripts/replay.ts      replays lopper on real transcripts offline and prints numbers only
 demo/                  everything behind the recordings above, reproducible
 ```
@@ -158,7 +158,7 @@ A few facts learned along the way, all measured:
 
 ```sh
 npm install
-npm test                  # 45 tests
+npm test                  # 51 tests
 npm run typecheck         # needs the types Claude Code writes on first load (or /plugin-types)
 npm run validate          # claude plugin validate
 npx tsx scripts/replay.ts ~/.claude/projects/<project>/<session>.jsonl

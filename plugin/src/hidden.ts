@@ -30,6 +30,8 @@ export interface Hidden {
 
 /** How far ahead a text block may find its row (thinking-only rows sit in between). */
 const LOOKAHEAD = 64;
+/** The API view holds at most this many messages; a longer conversation is cut at the start. */
+const API_WINDOW = 4096;
 
 const ATTACHMENT = /^<system-reminder>\s*(Called the Read tool with the following input|Result of calling the Read tool)/;
 
@@ -61,6 +63,9 @@ export function readHidden(rows: readonly Message[], api: unknown): Hidden {
   });
 
   let next = 0;
+  // A view cut at 4096 messages starts somewhere inside the rows: line it up on
+  // the first call both know, and put nothing back before that point.
+  let aligned = api.length < API_WINDOW;
   const findText = (role: Message['role'], text: string): { row: number; whole: boolean } | undefined => {
     for (let i = next; i < Math.min(rows.length, next + LOOKAHEAD); i++) {
       const row = rows[i]!;
@@ -77,13 +82,21 @@ export function readHidden(rows: readonly Message[], api: unknown): Hidden {
     for (const block of message.content) {
       if (block.type === 'tool_use' && typeof block['id'] === 'string') {
         const row = useRow.get(block['id']);
-        if (row !== undefined) next = Math.max(next, row + 1);
+        if (row !== undefined) {
+          next = Math.max(next, row + 1);
+          aligned = true;
+        }
       } else if (block.type === 'tool_result' && typeof block['tool_use_id'] === 'string') {
         const id = block['tool_use_id'];
         const row = resultRow.get(id);
-        if (row !== undefined) next = Math.max(next, row + 1);
+        if (row !== undefined) {
+          next = Math.max(next, row + 1);
+          aligned = true;
+        }
         const media = countMedia(block['content']);
         if (media.images + media.documents > 0) hidden.media.set(id, media);
+      } else if (!aligned) {
+        continue;
       } else if (block.type === 'text' && typeof block['text'] === 'string') {
         const text = block['text'].trim();
         if (!text) continue;

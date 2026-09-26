@@ -12,7 +12,7 @@ describe('cut', () => {
     const text = long(10_000);
     const out = cut(text, { head: 900, tail: 300 });
     expect(out.length).toBeLessThan(2_000);
-    expect(out).toMatch(/\[lopper: \d+ chars of this result removed here to save context, not an error/);
+    expect(out).toMatch(/\[lopper:\u2060 \d+ chars of this result removed here to save context, not an error/);
     const head = out.slice(0, out.indexOf('[lopper:'));
     const tail = out.slice(out.indexOf(']\n') + 2);
     const removed = Number(/(\d+) chars of this result/.exec(out)?.[1]);
@@ -98,6 +98,19 @@ describe('regroup', () => {
     const b = call('Bash', { command: 'b' }, 'b');
     const out = regroup([user('go'), a[0], a[1], b[0], b[1]]);
     expect(out).toHaveLength(5);
+    expect(paired(out)).toBe(true);
+  });
+
+  it('keeps a result recorded before the response listed its last call in the same pair', () => {
+    // Seen on real transcripts: A[a] A[b] A[c] U[rc] A[d] U[rb] U[ra] U[rd].
+    const [a, ra] = call('Read', { file_path: '/a' }, 'A');
+    const [b, rb] = call('Read', { file_path: '/b' }, 'B');
+    const [c, rc] = call('Read', { file_path: '/c' }, 'C');
+    const [d, rd] = call('Read', { file_path: '/d' }, 'D');
+    const out = regroup([user('go'), a, b, c, rc, d, rb, ra, rd, assistant('done')]);
+    expect(out.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
+    expect(out[1]!.toolUses).toHaveLength(4);
+    expect(out[2]!.toolResults).toHaveLength(4);
     expect(paired(out)).toBe(true);
   });
 
@@ -276,7 +289,7 @@ describe('prune', () => {
     const result = prune(messages, { media });
     expect(result.stats.mediaRemoved).toBe(2);
     expect(result.messages[2]!.toolResults![0]!.text).toBe(
-      '[lopper: removed an image from this result; run the tool again if you need to see it]',
+      '[lopper:\u2060 removed an image from this result; run the tool again if you need to see it]',
     );
     expect(result.messages[4]!.toolResults![0]!.text).toContain('removed a document from this result; read /p/spec.pdf again');
   });
@@ -318,6 +331,41 @@ describe('prune', () => {
     const result = prune(messages, tighter(DEFAULT_OPTIONS));
     expect(result.decisions.every((d) => d.action === 'kept')).toBe(true);
     expect(result.stats.charsAfter).toBe(result.stats.charsBefore);
+  });
+
+  it('counts a result recorded early as unread while its response is the last one', () => {
+    const messages: Message[] = [user('read')];
+    messages.push(...filler(30));
+    // One response with three calls; b's result was recorded before c was listed.
+    const [a, ra] = call('Read', { file_path: '/p/a.ts' }, long(50_000, 'a'));
+    const [b, rb] = call('Read', { file_path: '/p/b.ts' }, long(50_000, 'b'));
+    const [c, rc] = call('Read', { file_path: '/p/c.ts' }, long(50_000, 'c'));
+    messages.push(a, b, rb, c, ra, rc);
+    const result = prune(messages, tighter(DEFAULT_OPTIONS));
+    const d = result.decisions.find((x) => x.tool_use_id === rb.toolResults![0]!.tool_use_id)!;
+    expect(d.action).toBe('kept');
+    expect(d.charsAfter).toBe(50_000);
+  });
+
+  it('does not take a note quoted in a file for one of its own', () => {
+    const quoted = `${long(4_000)}\n[lopper: 3486 chars of this result removed here to save context, not an error; they included: Error: x. Run the tool again if you need them]\n${long(8_000)}`;
+    const out = cut(quoted, DEFAULT_OPTIONS.old);
+    const removed = Number(/(\d+) chars of this result removed here to save context, not an error/.exec(out.slice(out.indexOf('[lopper:\u2060')))?.[1]);
+    const head = out.slice(0, out.indexOf('[lopper:\u2060'));
+    const tail = out.slice(out.indexOf(']\n', out.indexOf('[lopper:\u2060')) + 2);
+    expect(head.length + removed + tail.length).toBe(quoted.length);
+  });
+
+  it('a Grep without a path is never superseded: a cd may have moved it', () => {
+    const run = (input: Record<string, unknown>) => {
+      const messages: Message[] = [user('search')];
+      messages.push(...call('Grep', input, long(6_000, 'match')));
+      messages.push(...filler(30));
+      messages.push(...call('Grep', input, long(6_000, 'match')));
+      return prune(messages).decisions[0]!.action;
+    };
+    expect(run({ pattern: 'foo' })).not.toBe('superseded');
+    expect(run({ pattern: 'foo', path: '/p/src' })).toBe('superseded');
   });
 
   it('trims even a recent result when it is huge', () => {

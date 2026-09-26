@@ -41,6 +41,18 @@ describe('decide', () => {
     expect(v.kind).toBe('summary');
   });
 
+  it('leaving room under the threshold is required only when lopper itself asked', () => {
+    // 950k of which a lot is prunable but the rest stays big: fine at the engine's limit.
+    const big = conversation(100, 12_000);
+    for (let i = 0; i < 15; i++) big.unshift(user('x'.repeat(20_000)), assistant('y'.repeat(20_000)));
+    expect(decide(big, config, { ...MAIN, tokens: 950_000 }, undefined, undefined, 'plugin')).toMatchObject({
+      kind: 'summary',
+      refusal: { why: 'still-big' },
+    });
+    expect(decide(big, config, { ...MAIN, tokens: 950_000 }, undefined, undefined, 'auto').kind).toBe('pruned');
+    expect(decide(big, config, { ...MAIN, tokens: 950_000 }, undefined, undefined, 'manual').kind).toBe('pruned');
+  });
+
   it('scales threshold and target to the window', () => {
     expect(limits(config, 1_000_000)).toEqual({ threshold: 300_000, target: 150_000 });
     expect(limits(config, 200_000)).toEqual({ threshold: 120_000, target: 72_000 });
@@ -125,6 +137,22 @@ describe('readHidden', () => {
       { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: [{ type: 'document' }, { type: 'image' }] }] },
     ]);
     expect(media.get(id)).toEqual({ images: 1, documents: 1 });
+  });
+
+  it('with a view cut at 4096 messages, puts nothing back before the first known call', () => {
+    const many: Message[] = [];
+    const api: { role: string; content: Record<string, unknown>[] }[] = [];
+    for (let i = 0; i < 2100; i++) {
+      const [use, result] = call('Bash', { command: `echo ${i}` }, `${i}`);
+      many.push(user(`prompt ${i}`), use, result);
+      if (i >= 50) {
+        api.push({ role: 'user', content: [{ type: 'text', text: `prompt ${i}` }] });
+        api.push({ role: 'assistant', content: [{ type: 'tool_use', id: use.toolUses[0]!.tool_use_id, name: 'Bash', input: {} }] });
+        api.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: result.toolResults![0]!.tool_use_id, content: `${i}` }] });
+      }
+    }
+    expect(api.length).toBeGreaterThanOrEqual(4096);
+    expect(readHidden(many, api.slice(-4096)).extras).toEqual([]);
   });
 
   it('copes with anything that is not a list', () => {
