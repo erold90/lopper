@@ -3,3 +3,4 @@ plugin/.claude-plugin/types/
 .memsearch/
 .DS_Store
 *.cast
+plugin/tsconfig.json
