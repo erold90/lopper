@@ -4,3 +4,4 @@ plugin/.claude-plugin/types/
 .DS_Store
 *.cast
 plugin/tsconfig.json
+lancio/
