@@ -1,0 +1,42 @@
+{
+  "name": "lopper",
+  "version": "0.1.0",
+  "description": "Compaction that prunes instead of summarizing: old tool output is trimmed, every word you and Claude wrote stays verbatim. Local, instant, no network.",
+  "author": { "name": "Daniele Lo Re", "url": "https://github.com/erold90" },
+  "homepage": "https://github.com/erold90/lopper",
+  "repository": "https://github.com/erold90/lopper",
+  "license": "MIT",
+  "keywords": ["compaction", "context", "tokens", "prune", "function-hooks"],
+  "userConfig": {
+    "threshold": {
+      "type": "number",
+      "title": "Threshold (tokens)",
+      "description": "Past this many tokens of context, lopper prunes on its own at the end of a turn (at most 60% of the model's window).",
+      "default": 300000
+    },
+    "target": {
+      "type": "number",
+      "title": "Target (tokens)",
+      "description": "Where pruning aims to land; above it lopper runs a tighter pass (at most 60% of the threshold).",
+      "default": 150000
+    },
+    "recentTokens": {
+      "type": "number",
+      "title": "Recent tokens kept whole",
+      "description": "The newest tokens of the conversation, where tool results are never trimmed.",
+      "default": 40000
+    },
+    "auto": {
+      "type": "boolean",
+      "title": "Automatic pruning",
+      "description": "When off, lopper only acts on /compact and at Claude Code's own limit.",
+      "default": true
+    },
+    "language": {
+      "type": "string",
+      "title": "Language of lopper's messages",
+      "description": "en or it. Notes written for the model are always in English.",
+      "default": "en"
+    }
+  }
+}

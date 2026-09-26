@@ -1,0 +1,22 @@
+{
+  "name": "lopper",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Claude Code compaction that prunes instead of summarizing",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json",
+    "validate": "claude plugin validate plugin/.claude-plugin/plugin.json && claude plugin validate .claude-plugin/marketplace.json",
+    "replay": "tsx scripts/replay.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@xterm/xterm": "^6.0.0",
+    "playwright-core": "^1.63.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "license": "MIT"
+}

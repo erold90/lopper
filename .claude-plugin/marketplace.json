@@ -1,0 +1,16 @@
+{
+  "name": "lopper",
+  "owner": { "name": "Daniele Lo Re", "url": "https://github.com/erold90" },
+  "metadata": {
+    "description": "lopper: Claude Code compaction that prunes old tool output instead of summarizing your conversation."
+  },
+  "plugins": [
+    {
+      "name": "lopper",
+      "source": "./plugin",
+      "description": "Compaction that prunes instead of summarizing: old tool output is trimmed, every word stays verbatim. Local, instant, no network.",
+      "version": "0.1.0",
+      "license": "MIT"
+    }
+  ]
+}

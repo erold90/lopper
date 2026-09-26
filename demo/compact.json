@@ -1,0 +1,18 @@
+[
+  {"watch": "Teach auto mode", "keys": ["esc"]},
+  {"wait": "trust", "timeout": 20, "optional": true, "then": ["down", "enter"]},
+  {"wait": "for shortcuts", "timeout": 90},
+  {"sleep": 1.5},
+  {"mark": true},
+  {"sleep": 1.2},
+  {"type": "/compact", "cps": 10},
+  {"sleep": 0.6},
+  {"key": "enter"},
+  {"wait": "every word kept", "timeout": 60},
+  {"sleep": 3},
+  {"type": "/lopper", "cps": 10},
+  {"sleep": 0.6},
+  {"key": "enter"},
+  {"wait": "compaction:", "timeout": 30},
+  {"sleep": 4}
+]
