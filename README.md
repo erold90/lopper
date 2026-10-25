@@ -2,14 +2,15 @@
 
 # lopper
 
-**Compaction for Claude Code that prunes instead of summarizing.**
+**Compaction for Claude Code — and [opencode](#opencode) — that prunes instead of summarizing.**
 
 Old tool output gets trimmed. Every word you and Claude wrote stays exactly as it was. It runs on your machine in milliseconds, with no API key and nothing sent anywhere.
 
 ![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-d97757)
 ![local only](https://img.shields.io/badge/network-none-3ddc97)
 ![compaction under 0.1 s](https://img.shields.io/badge/compaction-%3C0.1%20s-4ea1ff)
-![tests](https://img.shields.io/badge/tests-51%20passing-3ddc97)
+![opencode plugin](https://img.shields.io/badge/opencode-plugin-4ea1ff)
+![tests](https://img.shields.io/badge/tests-64%20passing-3ddc97)
 ![license: MIT](https://img.shields.io/badge/license-MIT-8fa3b8)
 
 <img src="media/hero.gif" width="720" alt="/compact with lopper on a 281k-token session, then Claude quotes the exact error from early in the session">
@@ -137,14 +138,46 @@ Optional: to have long single turns (agents working for hours on one prompt) pru
 - **The first Edit of a file after a compaction may ask for a re-read.** Claude Code clears its record of which files were read when a hook does the compaction.
 - **Subagents get pruned as well**, but their context size is estimated. The engine only reports the main conversation's.
 
+## opencode
+
+The same core runs as an [opencode](https://opencode.ai) plugin, through a different door: `experimental.chat.messages.transform`, which hands a plugin the messages about to be sent with each request. lopper changes only that copy. The stored session stays whole — you can scroll back to every byte — and opencode's own summary is left as a last resort at the model's limit.
+
+Once the context passes the threshold, lopper decides a **cut** over everything so far: old tool output to head + tail, results a later call made obsolete to a note, long inputs of old calls shortened, and the reasoning and images of finished turns dropped (opencode sends past reasoning back with every request). That same cut goes out with every later request, byte for byte, until the context grows enough for the next one — so the provider's prompt cache holds in between. The cut is saved, and computed again identically after a restart.
+
+```sh
+./opencode/install.sh      # builds one file into ~/.config/opencode/plugins/lopper.js
+```
+
+Then set `"compaction": { "prune": false }` in `opencode.json`: opencode's own pruning clears whole results and rewrites them in place, which breaks the cache at every turn it runs. Settings, all optional, in `~/.config/opencode/lopper.json`:
+
+```json
+{ "threshold": 160000, "target": 90000, "recentTokens": 30000, "auto": true, "language": "en" }
+```
+
+A toast says when lopper cuts; `~/.local/share/opencode/lopper/log.jsonl` keeps every cut.
+
+**Measured** on a real 190-request opencode session with DeepSeek V4.1 Flash on Venice, replayed request by request (`npm run replay:opencode -- <opencode export>.json`):
+
+| | opencode alone | with lopper |
+|---|---:|---:|
+| Peak context | 368k | 167k |
+| Cost of the session, with the same cache misses replayed | $1.79 | $1.28 |
+| Requests whose prefix changed between two cuts | — | 0 |
+
+Why size matters even with caching: cache reads cost 40× less than input there, but **22 of 190 requests missed the cache** on the provider's side and paid for the whole context again — 94% of all uncached input. A smaller context makes every miss cheaper. Live, a cut took 76.8k tokens to 50.4k in 1 ms, the next request read 42k of them from the cache, and a session resumed in a new process read 51,840 of 51,983 tokens from the cache.
+
+DeepSeek counts about **3.4 characters per token**, against 2 for Opus 5; the opencode side uses 3.3.
+
 ## How it's built
 
 ```
 plugin/src/prune.ts    pure, deterministic core: zones, cuts, superseded calls, notes
 plugin/src/hidden.ts   lines the API view up with the transcript rows to find skills, @ files, pasted media
 plugin/hooks/lopper.ts the Claude Code side: session.compact, turn.complete, /lopper
-tests/                 51 tests (vitest)
+opencode/lopper.ts     the opencode side: messages.transform, cuts kept stable for the cache
+tests/                 64 tests (vitest)
 scripts/replay.ts      replays lopper on real transcripts offline and prints numbers only
+scripts/replay-opencode.ts  the same on an `opencode export`, with cost and cache stability
 demo/                  everything behind the recordings above, reproducible
 ```
 
@@ -158,7 +191,7 @@ A few facts learned along the way, all measured:
 
 ```sh
 npm install
-npm test                  # 51 tests
+npm test                  # 64 tests
 npm run typecheck         # needs the types Claude Code writes on first load (or /plugin-types)
 npm run validate          # claude plugin validate
 npx tsx scripts/replay.ts ~/.claude/projects/<project>/<session>.jsonl

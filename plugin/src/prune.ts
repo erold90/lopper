@@ -76,7 +76,53 @@ export interface Options {
   media?: ReadonlyMap<string, Media>;
   /** Hidden context to put back (see `Extra`). */
   extras?: readonly Extra[];
+  /** Characters per token of the model, for the zones (default `CHARS_PER_TOKEN`). */
+  charsPerToken?: number;
+  /** The host's tool names and conventions (default: Claude Code's). */
+  profile?: ToolProfile;
 }
+
+/** What lopper needs to know about a host's tools to tell which results a later call made obsolete. */
+export interface ToolProfile {
+  /** Tools whose result depends on the input alone, not on the session's state. */
+  repeatable: ReadonlySet<string>;
+  /** Of those, the ones that search the working directory unless given an absolute `path`. */
+  needsPath: ReadonlySet<string>;
+  /** Tools whose result is a file's own content: nothing to salvage from it. */
+  readsFiles: ReadonlySet<string>;
+  /** Subagent reports: summaries already, cut little. */
+  agents: ReadonlySet<string>;
+  /** Results never cut: instructions the model keeps following (a skill's). */
+  keepWhole: ReadonlySet<string>;
+  /** The tool that reads a file, and the one that rewrites it whole. */
+  read: string;
+  write: string;
+  /** Input keys that name the file. */
+  pathKeys: readonly string[];
+  /** Input keys that make a read partial. */
+  rangeKeys: readonly string[];
+  /** A result that points back to an earlier read instead of carrying the file. */
+  isStub(text: string): boolean;
+  /** A result that does not carry the whole output (the host cut or spilled it). */
+  isPartial(text: string): boolean;
+}
+
+export const CLAUDE_CODE: ToolProfile = {
+  repeatable: new Set(['Read', 'Grep', 'Glob', 'LS', 'WebFetch', 'WebSearch', 'NotebookRead']),
+  needsPath: new Set(['Grep', 'Glob', 'LS']),
+  readsFiles: new Set(['Read', 'NotebookRead']),
+  agents: new Set(['Agent', 'Task']),
+  keepWhole: new Set(),
+  read: 'Read',
+  write: 'Write',
+  pathKeys: ['file_path', 'notebook_path'],
+  rangeKeys: ['offset', 'limit', 'pages'],
+  isStub: (text) =>
+    text.startsWith('File unchanged since last read') ||
+    text.startsWith('Wasted call') ||
+    text.startsWith('<system-reminder>This file is already in your context'),
+  isPartial: (text) => text.includes('[Truncated: PARTIAL view') || text.startsWith('Output too large'),
+};
 
 export type Zone = 'recent' | 'middle' | 'old';
 
@@ -151,8 +197,8 @@ export function tighter(base: Options): Options {
   };
 }
 
-export function estimateTokens(chars: number): number {
-  return Math.ceil(chars / CHARS_PER_TOKEN);
+export function estimateTokens(chars: number, charsPerToken = CHARS_PER_TOKEN): number {
+  return Math.ceil(chars / charsPerToken);
 }
 
 /**
@@ -297,10 +343,13 @@ export function cut(text: string, limits: Cut, keep = true): string {
   return out.length < text.length ? out : text;
 }
 
-/** How a Read or Write names its file. */
-function pathOf(use: ToolUse): string | undefined {
-  const p = use.input['file_path'] ?? use.input['notebook_path'];
-  return typeof p === 'string' && p.length > 0 ? p : undefined;
+/** How a read or write names its file. */
+function pathOf(use: ToolUse, profile: ToolProfile): string | undefined {
+  for (const key of profile.pathKeys) {
+    const p = use.input[key];
+    if (typeof p === 'string' && p.length > 0) return p;
+  }
+  return undefined;
 }
 
 /** Stable JSON, keys sorted, so equal inputs compare equal. */
@@ -313,29 +362,6 @@ function sortedJson(value: unknown): string {
     .join(',')}}`;
 }
 
-/**
- * Tools whose result depends on the input alone, not on the session's state (a
- * Bash `ls` depends on the working directory): only these can be superseded by a
- * later identical call.
- */
-const REPEATABLE = new Set(['Read', 'Grep', 'Glob', 'LS', 'WebFetch', 'WebSearch', 'NotebookRead']);
-/** These search the working directory unless given a `path`, and a `cd` in Bash moves it. */
-const NEEDS_PATH = new Set(['Grep', 'Glob', 'LS']);
-
-/** A result that points back to an earlier read instead of carrying the file. */
-function isStub(text: string): boolean {
-  return (
-    text.startsWith('File unchanged since last read') ||
-    text.startsWith('Wasted call') ||
-    text.startsWith('<system-reminder>This file is already in your context')
-  );
-}
-
-/** A result that does not carry the whole output (Claude Code cut or spilled it). */
-function isPartial(text: string): boolean {
-  return text.includes('[Truncated: PARTIAL view') || text.startsWith('Output too large');
-}
-
 interface Keys {
   /** Keys a later call can supersede this one by. */
   reads: string[];
@@ -343,44 +369,41 @@ interface Keys {
   produces: string[];
 }
 
-function keysOf(use: ToolUse, result: ToolResult): Keys {
+function keysOf(use: ToolUse, result: ToolResult, p: ToolProfile): Keys {
   const reads: string[] = [];
   const produces: string[] = [];
-  const substantive = !result.isError && !isStub(result.text) && !isPartial(result.text);
-  const anchored = !NEEDS_PATH.has(use.tool) || (typeof use.input['path'] === 'string' && use.input['path'].startsWith('/'));
-  if (REPEATABLE.has(use.tool) && anchored) {
+  const substantive = !result.isError && !p.isStub(result.text) && !p.isPartial(result.text);
+  // A search without an absolute path depends on the working directory, which a shell `cd` moves.
+  const anchored = !p.needsPath.has(use.tool) || (typeof use.input['path'] === 'string' && use.input['path'].startsWith('/'));
+  if (p.repeatable.has(use.tool) && anchored) {
     const same = `same:${use.tool}:${sortedJson(use.input)}`;
     reads.push(same);
     if (substantive) produces.push(same);
   }
-  const path = pathOf(use);
-  if (path && use.tool === 'Read') {
+  const path = pathOf(use, p);
+  if (path && use.tool === p.read) {
     reads.push(`file:${path}`);
-    const whole = !['offset', 'limit', 'pages'].some((k) => use.input[k] !== undefined);
+    const whole = !p.rangeKeys.some((k) => use.input[k] !== undefined);
     if (whole && substantive) produces.push(`file:${path}`);
   }
   // After a whole-file rewrite, every earlier read of it is stale.
-  if (path && use.tool === 'Write' && !result.isError) produces.push(`file:${path}`);
+  if (path && use.tool === p.write && !result.isError) produces.push(`file:${path}`);
   return { reads, produces };
 }
 
-function describeLater(later: Call): string {
+function describeLater(later: Call, p: ToolProfile): string {
   const use = later.use;
-  const path = use ? pathOf(use) : undefined;
-  if (path && use?.tool === 'Write') return `${path} was rewritten later`;
-  if (path && use?.tool === 'Read') return `${path} was read again later`;
+  const path = use ? pathOf(use, p) : undefined;
+  if (path && use?.tool === p.write) return `${path} was rewritten later`;
+  if (path && use?.tool === p.read) return `${path} was read again later`;
   return `the same ${use?.tool ?? 'call'} ran again later`;
 }
-
-const AGENTS = new Set(['Agent', 'Task']);
-/** Tools whose result is a file's own content: nothing to salvage from it. */
-const READS_FILES = new Set(['Read', 'NotebookRead']);
 
 function limitsFor(zone: Zone, tool: string, error: boolean, o: Options): Cut | undefined {
   if (zone === 'recent') return undefined;
   const base = zone === 'middle' ? o.middle : o.old;
   let limits = base;
-  if (AGENTS.has(tool)) {
+  if ((o.profile ?? CLAUDE_CODE).agents.has(tool)) {
     limits = { head: Math.max(base.head, o.agent.head), tail: Math.max(base.tail, o.agent.tail) };
   }
   if (error) limits = { head: Math.round(limits.head * o.errorHeadFactor), tail: limits.tail };
@@ -472,11 +495,11 @@ function collectCalls(messages: readonly Message[]): Call[] {
   return order;
 }
 
-function mediaNote(tool: string, path: string | undefined, media: Media): string {
+function mediaNote(tool: string, path: string | undefined, media: Media, p: ToolProfile): string {
   const parts: string[] = [];
   if (media.images > 0) parts.push(media.images === 1 ? 'an image' : `${media.images} images`);
   if (media.documents > 0) parts.push(media.documents === 1 ? 'a document' : `${media.documents} documents`);
-  const how = tool === 'Read' && path ? `read ${path} again` : 'run the tool again';
+  const how = tool === p.read && path ? `read ${path} again` : 'run the tool again';
   return `${NOTE} removed ${parts.join(' and ')} from this result; ${how} if you need to see it]`;
 }
 
@@ -582,8 +605,10 @@ export function prune(messages: readonly Message[], options: Partial<Options> = 
     running += messageChars(messages[i]!);
   }
   const charsBefore = running + (o.extras ?? []).reduce((s, x) => s + x.text.length, 0);
-  const recentLimit = o.recentTokens * CHARS_PER_TOKEN;
-  const middleLimit = recentLimit + o.middleTokens * CHARS_PER_TOKEN;
+  const profile = o.profile ?? CLAUDE_CODE;
+  const cpt = o.charsPerToken && o.charsPerToken > 0 ? o.charsPerToken : CHARS_PER_TOKEN;
+  const recentLimit = o.recentTokens * cpt;
+  const middleLimit = recentLimit + o.middleTokens * cpt;
   const zoneOf = (row: number): Zone => {
     const d = after[Math.min(Math.max(row, 0), n - 1)] ?? 0;
     return d < recentLimit ? 'recent' : d < middleLimit ? 'middle' : 'old';
@@ -613,11 +638,11 @@ export function prune(messages: readonly Message[], options: Partial<Options> = 
   for (let k = calls.length - 1; k >= 0; k--) {
     const c = calls[k]!;
     if (!c.use || !c.result) continue;
-    const { reads, produces } = keysOf(c.use, c.result);
+    const { reads, produces } = keysOf(c.use, c.result, profile);
     for (const key of reads) {
       const later = produced.get(key);
       if (later) {
-        supersededBy.set(c.tool_use_id, describeLater(later));
+        supersededBy.set(c.tool_use_id, describeLater(later, profile));
         break;
       }
     }
@@ -646,8 +671,9 @@ export function prune(messages: readonly Message[], options: Partial<Options> = 
     }
 
     const original = c.result?.text ?? c.use?.text;
-    if (original === undefined) {
-      decisions.push({ tool_use_id: c.tool_use_id, tool, zone, action: 'kept', charsBefore: 0, charsAfter: 0, inputTrimmed, media: mediaCount });
+    if (original === undefined || profile.keepWhole.has(tool)) {
+      const chars = original?.length ?? 0;
+      decisions.push({ tool_use_id: c.tool_use_id, tool, zone, action: 'kept', charsBefore: chars, charsAfter: chars, inputTrimmed, media: mediaCount });
       continue;
     }
 
@@ -669,7 +695,7 @@ export function prune(messages: readonly Message[], options: Partial<Options> = 
         (unread(c) ? undefined : limitsFor(zone, tool, error, o)) ??
         (original.length > huge ? { head: Math.round(huge * 0.7), tail: Math.round(huge * 0.3) } : undefined);
       if (limits) {
-        const shorter = cut(original, limits, !READS_FILES.has(tool));
+        const shorter = cut(original, limits, !profile.readsFiles.has(tool));
         if (shorter !== original) {
           text = shorter;
           action = 'trimmed';
@@ -677,7 +703,7 @@ export function prune(messages: readonly Message[], options: Partial<Options> = 
       }
     }
     if (media && mediaCount > 0) {
-      const note = mediaNote(tool, c.use ? pathOf(c.use) : undefined, media);
+      const note = mediaNote(tool, c.use ? pathOf(c.use, profile) : undefined, media, profile);
       if (!text.includes(note)) text = `${text}${text ? '\n' : ''}${note}`;
     }
     if (text !== original) newTexts.set(c.tool_use_id, text);

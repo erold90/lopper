@@ -5,3 +5,4 @@ plugin/.claude-plugin/types/
 *.cast
 plugin/tsconfig.json
 lancio/
+dist/

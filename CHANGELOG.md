@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0 (2026-10-25)
+
+- **opencode plugin** (`opencode/`): prunes the copy of the conversation sent with each request, through `experimental.chat.messages.transform`; the stored session is never touched. A cut is decided past the threshold and sent unchanged until the next one, so the prompt cache holds; it is saved and computed again identically after a restart. Drops the reasoning and images of finished turns, which opencode sends back with every request. On a real 190-request session: peak context 368k → 167k, cost $1.79 → $1.28.
+- The core takes a tool profile (names, file keys, truncation markers) and characters per token, so it serves both hosts; Claude Code's behaviour is unchanged.
+- `scripts/replay-opencode.ts` replays an `opencode export` request by request: context, cost with the real cache misses, and prefix stability between cuts.
+
 ## 0.1.0 (2026-09-26)
 
 First release.
