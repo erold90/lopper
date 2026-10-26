@@ -10,7 +10,7 @@ Old tool output gets trimmed. Every word you and Claude wrote stays exactly as i
 ![local only](https://img.shields.io/badge/network-none-3ddc97)
 ![compaction under 0.1 s](https://img.shields.io/badge/compaction-%3C0.1%20s-4ea1ff)
 ![opencode plugin](https://img.shields.io/badge/opencode-plugin-4ea1ff)
-![tests](https://img.shields.io/badge/tests-64%20passing-3ddc97)
+![tests](https://img.shields.io/badge/tests-74%20passing-3ddc97)
 ![license: MIT](https://img.shields.io/badge/license-MIT-8fa3b8)
 
 <img src="media/hero.gif" width="720" alt="/compact with lopper on a 281k-token session, then Claude quotes the exact error from early in the session">
@@ -140,7 +140,7 @@ Optional: to have long single turns (agents working for hours on one prompt) pru
 
 ## opencode
 
-The same core runs as an [opencode](https://opencode.ai) plugin, through a different door: `experimental.chat.messages.transform`, which hands a plugin the messages about to be sent with each request. lopper changes only that copy. The stored session stays whole — you can scroll back to every byte — and opencode's own summary is left as a last resort at the model's limit.
+The same core runs as an [opencode](https://opencode.ai) plugin, through a different door: the hook that hands a plugin the messages about to be sent with each model call — the session `context` hook on opencode 2, `experimental.chat.messages.transform` on opencode 1. One file serves both. lopper changes only that copy. The stored session stays whole — you can scroll back to every byte — and opencode's own summary is left as a last resort at the model's limit.
 
 Once the context passes the threshold, lopper decides a **cut** over everything so far: old tool output to head + tail, results a later call made obsolete to a note, long inputs of old calls shortened, and the reasoning and images of finished turns dropped (opencode sends past reasoning back with every request). That same cut goes out with every later request, byte for byte, until the context grows enough for the next one — so the provider's prompt cache holds in between. The cut is saved, and computed again identically after a restart.
 
@@ -148,13 +148,13 @@ Once the context passes the threshold, lopper decides a **cut** over everything 
 ./opencode/install.sh      # builds one file into ~/.config/opencode/plugins/lopper.js
 ```
 
-Then set `"compaction": { "prune": false }` in `opencode.json`: opencode's own pruning clears whole results and rewrites them in place, which breaks the cache at every turn it runs. Settings, all optional, in `~/.config/opencode/lopper.json`:
+On opencode 1, also set `"compaction": { "prune": false }` in `opencode.json`: its own pruning clears whole results and rewrites them in place, which breaks the cache at every turn it runs. opencode 2 has no pruning of its own and ignores that field. Settings, all optional, in `~/.config/opencode/lopper.json`:
 
 ```json
 { "threshold": 160000, "target": 90000, "recentTokens": 30000, "auto": true, "language": "en" }
 ```
 
-A toast says when lopper cuts; `~/.local/share/opencode/lopper/log.jsonl` keeps every cut.
+`~/.local/share/opencode/lopper/log.jsonl` keeps every cut (opencode 1 also shows a toast). On opencode 2 the size of each call comes from the provider's report of the previous step; until one arrives, lopper estimates it from what is sent.
 
 **Measured** on a real 190-request opencode session with DeepSeek V4.1 Flash on Venice, replayed request by request (`npm run replay:opencode -- <opencode export>.json`):
 
@@ -166,6 +166,8 @@ A toast says when lopper cuts; `~/.local/share/opencode/lopper/log.jsonl` keeps 
 
 Why size matters even with caching: cache reads cost 40× less than input there, but **22 of 190 requests missed the cache** on the provider's side and paid for the whole context again — 94% of all uncached input. A smaller context makes every miss cheaper. Live, a cut took 76.8k tokens to 50.4k in 1 ms, the next request read 42k of them from the cache, and a session resumed in a new process read 51,840 of 51,983 tokens from the cache.
 
+Live on **opencode 2.1.4**, same model: a cut took the context from 82k to an estimated 47.7k tokens, the provider counted 46.3k, and the next two calls read 46,208 of 46,358 and 46,336 of 46,373 tokens from the cache.
+
 DeepSeek counts about **3.4 characters per token**, against 2 for Opus 5; the opencode side uses 3.3.
 
 ## How it's built
@@ -174,8 +176,10 @@ DeepSeek counts about **3.4 characters per token**, against 2 for Opus 5; the op
 plugin/src/prune.ts    pure, deterministic core: zones, cuts, superseded calls, notes
 plugin/src/hidden.ts   lines the API view up with the transcript rows to find skills, @ files, pasted media
 plugin/hooks/lopper.ts the Claude Code side: session.compact, turn.complete, /lopper
-opencode/lopper.ts     the opencode side: messages.transform, cuts kept stable for the cache
-tests/                 64 tests (vitest)
+opencode/lopper.ts     the opencode 1 side: messages.transform, cuts kept stable for the cache
+opencode/v2.ts         the opencode 2 side: the session context hook, same cuts
+opencode/plugin.ts     the file opencode loads, for either version
+tests/                 74 tests (vitest)
 scripts/replay.ts      replays lopper on real transcripts offline and prints numbers only
 scripts/replay-opencode.ts  the same on an `opencode export`, with cost and cache stability
 demo/                  everything behind the recordings above, reproducible
@@ -191,7 +195,7 @@ A few facts learned along the way, all measured:
 
 ```sh
 npm install
-npm test                  # 64 tests
+npm test                  # 74 tests
 npm run typecheck         # needs the types Claude Code writes on first load (or /plugin-types)
 npm run validate          # claude plugin validate
 npx tsx scripts/replay.ts ~/.claude/projects/<project>/<session>.jsonl

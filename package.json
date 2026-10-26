@@ -1,6 +1,6 @@
 {
   "name": "lopper",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "Compaction that prunes instead of summarizing, for Claude Code and opencode",

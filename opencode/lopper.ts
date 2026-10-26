@@ -495,11 +495,11 @@ interface PluginInput {
   };
 }
 
-const dataDir = (): string =>
+export const dataDir = (): string =>
   join(process.env['XDG_DATA_HOME'] || join(homedir(), '.local', 'share'), 'opencode', 'lopper');
 
 /** `~/.config/opencode/lopper.json`, or the file `LOPPER_CONFIG` names. */
-function configFile(): unknown {
+export function configFile(): unknown {
   const dir = process.env['XDG_CONFIG_HOME'] || join(homedir(), '.config');
   try {
     return JSON.parse(readFileSync(process.env['LOPPER_CONFIG'] || join(dir, 'opencode', 'lopper.json'), 'utf8'));

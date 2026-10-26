@@ -1,6 +1,6 @@
 {
   "name": "lopper",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Compaction that prunes instead of summarizing: old tool output is trimmed, every word you and Claude wrote stays verbatim. Local, instant, no network.",
   "author": {
     "name": "Daniele Lo Re",

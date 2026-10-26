@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0 (2026-10-26)
+
+- **opencode 2 support** (`opencode/v2.ts`): the cut is applied through the session `context` hook, which changes only the outgoing model call. Messages keep opencode's own class; tool calls and results are matched by call id across the response and the `tool` message; reasoning and media of finished turns go, as before. The same cut is applied to summary calls through the `compaction` hook, without deciding a new one.
+- The context size comes from `session.step.ended`; until a step is reported, lopper estimates it with the current cut applied, so a restart does not trigger a pointless second try.
+- `opencode/plugin.ts` default-exports one definition for both versions: `id` + `setup` for opencode 2, `server` for opencode 1.
+- Tool profile for opencode 2: `path` (and `filePath` from carried-over sessions), `subagent`, and its truncation notes.
+- Live on opencode 2.1.4 with DeepSeek V4.1 Flash: 82k → 46.3k tokens, then 99.7% of the next calls read from the cache.
+
 ## 0.2.0 (2026-10-25)
 
 - **opencode plugin** (`opencode/`): prunes the copy of the conversation sent with each request, through `experimental.chat.messages.transform`; the stored session is never touched. A cut is decided past the threshold and sent unchanged until the next one, so the prompt cache holds; it is saved and computed again identically after a restart. Drops the reasoning and images of finished turns, which opencode sends back with every request. On a real 190-request session: peak context 368k → 167k, cost $1.79 → $1.28.

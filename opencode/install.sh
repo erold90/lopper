@@ -15,4 +15,5 @@ npx esbuild opencode/plugin.ts --bundle --platform=node --format=esm --target=es
   --log-level=warning --outfile=dist/opencode/lopper.js
 mkdir -p "$DEST"
 cp dist/opencode/lopper.js "$DEST/lopper.js"
-echo "installed -> $DEST/lopper.js (restart opencode to load it)"
+echo "installed -> $DEST/lopper.js"
+if opencode --version 2>/dev/null | grep -q "v2\."; then opencode reload >/dev/null 2>&1 && echo "opencode 2: configuration reloaded"; else echo "restart opencode to load it"; fi
